@@ -1,6 +1,8 @@
 package com.singaseongapp.neuronicleviewer
 
 import android.Manifest
+import android.annotation.SuppressLint
+import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothSocket
@@ -21,6 +23,7 @@ import java.util.UUID
 class MainActivity : AppCompatActivity() {
 
     private val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
+    private var bluetoothAdapter: BluetoothAdapter? = null
     private var bluetoothSocket: BluetoothSocket? = null
     private var inputStream: InputStream? = null
     private var isReading = false
@@ -83,16 +86,21 @@ class MainActivity : AppCompatActivity() {
         requestPermissionLauncher.launch(permissions)
     }
 
+    @SuppressLint("MissingPermission")
     private fun startBluetoothConnection() {
         val bluetoothManager = getSystemService(BLUETOOTH_SERVICE) as BluetoothManager
-        val adapter = bluetoothManager.adapter
+        bluetoothAdapter = bluetoothManager.adapter
+        val adapter = bluetoothAdapter
 
         if (adapter == null || !adapter.isEnabled) {
             statusText?.text = "Status: Enable Bluetooth"
             return
         }
 
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
+        ) {
+            statusText?.text = "Status: Bluetooth permission missing"
             return
         }
 
@@ -109,15 +117,26 @@ class MainActivity : AppCompatActivity() {
     private fun connectToDevice(device: BluetoothDevice) {
         Thread {
             try {
-                if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-                    bluetoothSocket = device.createRfcommSocketToServiceRecord(SPP_UUID)
-                    bluetoothSocket?.connect()
-                    inputStream = bluetoothSocket?.inputStream
-
-                    runOnUiThread { statusText?.text = "Status: Connected!" }
-                    readData()
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                    ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    runOnUiThread { statusText?.text = "Status: Bluetooth permission missing" }
+                    return@Thread
                 }
+
+                bluetoothAdapter?.cancelDiscovery()
+                closeConnection()
+
+                bluetoothSocket = device.createRfcommSocketToServiceRecord(SPP_UUID)
+                bluetoothSocket?.connect()
+                inputStream = bluetoothSocket?.inputStream
+
+                runOnUiThread { statusText?.text = "Status: Connected!" }
+                readData()
+            } catch (e: SecurityException) {
+                runOnUiThread { statusText?.text = "Status: Bluetooth permission missing" }
             } catch (e: IOException) {
+                closeConnection()
                 runOnUiThread { statusText?.text = "Status: Failed to Connect" }
             }
         }.start()
@@ -134,6 +153,10 @@ class MainActivity : AppCompatActivity() {
         while (isReading) {
             try {
                 val bytesRead = inputStream?.read(buffer) ?: -1
+                if (bytesRead <= 0) {
+                    throw IOException("Bluetooth stream closed")
+                }
+
                 for (i in 0 until bytesRead) {
                     val currentByte = buffer[i].toInt() and 0xFF
                     if (lastByte == 255 && currentByte == 254) {
@@ -155,14 +178,29 @@ class MainActivity : AppCompatActivity() {
                 }
             } catch (e: IOException) {
                 isReading = false
+                closeConnection()
                 runOnUiThread { statusText?.text = "Status: Disconnected" }
             }
         }
     }
 
+    private fun closeConnection() {
+        try {
+            inputStream?.close()
+        } catch (_: IOException) {
+        }
+        inputStream = null
+
+        try {
+            bluetoothSocket?.close()
+        } catch (_: IOException) {
+        }
+        bluetoothSocket = null
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         isReading = false
-        try { bluetoothSocket?.close() } catch (e: Exception) {}
+        closeConnection()
     }
 }
