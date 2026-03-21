@@ -1,45 +1,55 @@
 package com.singaseongapp.neuronicleviewer
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ExampleUnitTest {
     @Test
-    fun decodePacket_extractsChannelValues() {
-        val packet = intArrayOf(0, 0x01, 0x02, 0x03, 0x04, 0, 0, 0, 0, 0)
+    fun decodePacket_extractsChannelValuesAndStatusFlags() {
+        val packet = intArrayOf(
+            0,
+            0b0011_1000,
+            1,
+            0,
+            75,
+            0x01,
+            0x80,
+            0x7F,
+            0xFF
+        )
 
-        val reading = PacketParser.decodePacket(packet)
+        val frame = PacketParser.decodePacket(packet)
 
-        assertEquals(130, reading.ch1)
-        assertEquals(388, reading.ch2)
+        assertEquals(384, frame.reading.ch1)
+        assertEquals(-1, frame.reading.ch2)
+        assertTrue(frame.status.ch1Connected)
+        assertTrue(frame.status.ch2Connected)
+        assertTrue(frame.status.refConnected)
+        assertEquals(75, frame.status.batteryPercent)
     }
 
     @Test
-    fun streamDecoder_ignoresNoiseAndReturnsCompletedPacket() {
+    fun streamDecoder_aggregatesCyclicStatusAcrossPackets() {
         val bytes = byteArrayOf(
-            0x01,
-            0x02,
-            0x7F.toByte(),
-            0xFF.toByte(),
-            0xFE.toByte(),
-            0x00,
-            0x01,
-            0x02,
-            0x03,
-            0x04,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00
+            0x55,
+            0xFF.toByte(), 0xFE.toByte(), 0x00, 0x38, 0x00, 0x00, 0x14, 0x01, 0x00, 0x02, 0x00,
+            0xFF.toByte(), 0xFE.toByte(), 0x00, 0x38, 0x01, 0x00, 0x50, 0x01, 0x00, 0x02, 0x00,
+            0xFF.toByte(), 0xFE.toByte(), 0x00, 0x38, 0x02, 0x00, 0x01, 0x01, 0x00, 0x02, 0x00
         )
 
-        val readings = PacketParser.StreamDecoder().consume(bytes, bytes.size)
+        val frames = PacketParser.StreamDecoder().consume(bytes, bytes.size)
+        val last = frames.last()
 
-        assertEquals(1, readings.size)
-        assertEquals(130, readings.first().ch1)
-        assertEquals(388, readings.first().ch2)
+        assertEquals(3, frames.size)
+        assertTrue(last.status.bandWorn)
+        assertFalse(last.status.lowBatteryWarning)
+        assertEquals(80, last.status.batteryPercent)
+        assertTrue(last.status.clipElectrodeOk)
+        assertTrue(last.status.ch1Connected)
+        assertTrue(last.status.ch2Connected)
+        assertTrue(last.status.refConnected)
     }
 
     @Test(expected = IllegalArgumentException::class)
@@ -49,7 +59,7 @@ class ExampleUnitTest {
 
     @Test
     fun streamDecoder_returnsEmptyUntilPacketComplete() {
-        val partial = byteArrayOf(0xFF.toByte(), 0xFE.toByte(), 0x00, 0x01, 0x02)
+        val partial = byteArrayOf(0xFF.toByte(), 0xFE.toByte(), 0x00, 0x38, 0x00)
 
         val readings = PacketParser.StreamDecoder().consume(partial, partial.size)
 
