@@ -6,14 +6,20 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothSocket
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
+import android.widget.Button
 import android.widget.TextView
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import java.io.IOException
@@ -22,68 +28,90 @@ import java.util.UUID
 
 class MainActivity : AppCompatActivity() {
 
-    private val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
+    private val sppUuid: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
     private var bluetoothAdapter: BluetoothAdapter? = null
     private var bluetoothSocket: BluetoothSocket? = null
     private var inputStream: InputStream? = null
-    private var isReading = false
+    @Volatile private var isReading = false
 
-    // UI Elements
-    private var statusText: TextView? = null
-    private var ch1TextView: TextView? = null
-    private var ch2TextView: TextView? = null
+    private lateinit var statusText: TextView
+    private lateinit var deviceText: TextView
+    private lateinit var ch1TextView: TextView
+    private lateinit var ch2TextView: TextView
+    private lateinit var connectButton: Button
+    private lateinit var settingsButton: Button
 
-    // Launcher for permissions
-    private val requestPermissionLauncher = registerForActivityResult(
+    private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
-        if (results.all { it.value }) {
+        val deniedPermissions = results.filterValues { granted -> !granted }.keys
+        if (deniedPermissions.isEmpty()) {
+            updateStatus(getString(R.string.status_permissions_granted))
             startBluetoothConnection()
         } else {
-            statusText?.text = "Status: Permissions Denied"
+            updateStatus(getString(R.string.status_permissions_denied))
         }
+    }
+
+    private val enableBluetoothLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        startBluetoothConnection()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // 1. Enable Edge-to-Edge BEFORE setContentView
         enableEdgeToEdge()
         setContentView(R.layout.activity_main)
 
-        // 2. Link UI elements with safety null-checks
         statusText = findViewById(R.id.statusText)
+        deviceText = findViewById(R.id.deviceText)
         ch1TextView = findViewById(R.id.ch1Text)
         ch2TextView = findViewById(R.id.ch2Text)
+        connectButton = findViewById(R.id.connectButton)
+        settingsButton = findViewById(R.id.settingsButton)
 
-        // 3. Handle System Bars (using your xml id "main")
         val mainView = findViewById<android.view.View>(R.id.main)
-        if (mainView != null) {
-            ViewCompat.setOnApplyWindowInsetsListener(mainView) { v, insets ->
-                val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-                v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
-                insets
-            }
+        ViewCompat.setOnApplyWindowInsetsListener(mainView) { view, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            view.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
+            insets
         }
 
-        checkPermissions()
+        connectButton.setOnClickListener { ensureReadyAndConnect() }
+        settingsButton.setOnClickListener { openAppSettings() }
+
+        updateStatus(getString(R.string.status_idle))
+        updateSelectedDevice(null)
+        updateChannelReadings(PacketParser.ChannelReading(0, 0))
+
+        ensureReadyAndConnect()
     }
 
-    private fun checkPermissions() {
-        val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            arrayOf(
-                Manifest.permission.BLUETOOTH_SCAN,
-                Manifest.permission.BLUETOOTH_CONNECT,
-                Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.ACCESS_COARSE_LOCATION
-            )
-        } else {
-            arrayOf(
-                Manifest.permission.BLUETOOTH,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            )
+    private fun ensureReadyAndConnect() {
+        if (!hasRequiredPermissions()) {
+            permissionLauncher.launch(requiredPermissions())
+            return
         }
-        requestPermissionLauncher.launch(permissions)
+        startBluetoothConnection()
+    }
+
+    private fun requiredPermissions(): Array<String> = when {
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> arrayOf(
+            Manifest.permission.BLUETOOTH_SCAN,
+            Manifest.permission.BLUETOOTH_CONNECT
+        )
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> arrayOf(
+            Manifest.permission.ACCESS_FINE_LOCATION
+        )
+        else -> arrayOf(
+            Manifest.permission.BLUETOOTH,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        )
+    }
+
+    private fun hasRequiredPermissions(): Boolean = requiredPermissions().all { permission ->
+        ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
     }
 
     @SuppressLint("MissingPermission")
@@ -92,52 +120,81 @@ class MainActivity : AppCompatActivity() {
         bluetoothAdapter = bluetoothManager.adapter
         val adapter = bluetoothAdapter
 
-        if (adapter == null || !adapter.isEnabled) {
-            statusText?.text = "Status: Enable Bluetooth"
+        if (adapter == null) {
+            updateStatus(getString(R.string.status_bluetooth_unavailable))
+            return
+        }
+
+        if (!adapter.isEnabled) {
+            updateStatus(getString(R.string.status_enable_bluetooth))
+            enableBluetoothLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
             return
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
             ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
         ) {
-            statusText?.text = "Status: Bluetooth permission missing"
+            updateStatus(getString(R.string.status_permission_missing))
             return
         }
 
-        val device = adapter.bondedDevices.find { it.name?.contains("neuroNicle", ignoreCase = true) == true }
+        val bondedDevices = adapter.bondedDevices.sortedBy { it.name ?: it.address }
+        if (bondedDevices.isEmpty()) {
+            updateStatus(getString(R.string.status_no_paired_device))
+            return
+        }
 
-        if (device != null) {
-            statusText?.text = "Status: Connecting..."
-            connectToDevice(device)
+        val preferredDevice = bondedDevices.singleOrNull { it.name?.contains("neuroNicle", ignoreCase = true) == true }
+        if (preferredDevice != null) {
+            connectToDevice(preferredDevice)
         } else {
-            statusText?.text = "Status: neuroNicle not paired"
+            showDeviceChooser(bondedDevices)
         }
     }
 
+    @SuppressLint("MissingPermission")
+    private fun showDeviceChooser(devices: List<BluetoothDevice>) {
+        val labels = devices.map { device ->
+            val name = device.name ?: getString(R.string.unknown_device)
+            getString(R.string.device_label, name, device.address)
+        }.toTypedArray()
+
+        AlertDialog.Builder(this)
+            .setTitle(R.string.choose_device)
+            .setItems(labels) { _, which ->
+                connectToDevice(devices[which])
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
     private fun connectToDevice(device: BluetoothDevice) {
+        updateSelectedDevice(device)
+        updateStatus(getString(R.string.status_connecting))
+
         Thread {
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
                     ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
                 ) {
-                    runOnUiThread { statusText?.text = "Status: Bluetooth permission missing" }
+                    runOnUiThread { updateStatus(getString(R.string.status_permission_missing)) }
                     return@Thread
                 }
 
                 bluetoothAdapter?.cancelDiscovery()
                 closeConnection()
 
-                bluetoothSocket = device.createRfcommSocketToServiceRecord(SPP_UUID)
+                bluetoothSocket = device.createRfcommSocketToServiceRecord(sppUuid)
                 bluetoothSocket?.connect()
                 inputStream = bluetoothSocket?.inputStream
 
-                runOnUiThread { statusText?.text = "Status: Connected!" }
+                runOnUiThread { updateStatus(getString(R.string.status_connected)) }
                 readData()
-            } catch (e: SecurityException) {
-                runOnUiThread { statusText?.text = "Status: Bluetooth permission missing" }
-            } catch (e: IOException) {
+            } catch (_: SecurityException) {
+                runOnUiThread { updateStatus(getString(R.string.status_permission_missing)) }
+            } catch (_: IOException) {
                 closeConnection()
-                runOnUiThread { statusText?.text = "Status: Failed to Connect" }
+                runOnUiThread { updateStatus(getString(R.string.status_failed_connect)) }
             }
         }.start()
     }
@@ -145,10 +202,7 @@ class MainActivity : AppCompatActivity() {
     private fun readData() {
         isReading = true
         val buffer = ByteArray(1024)
-        var lastByte = -1
-        val packet = IntArray(15)
-        var packetIdx = 0
-        var isSync = false
+        val decoder = PacketParser.StreamDecoder()
 
         while (isReading) {
             try {
@@ -157,34 +211,50 @@ class MainActivity : AppCompatActivity() {
                     throw IOException("Bluetooth stream closed")
                 }
 
-                for (i in 0 until bytesRead) {
-                    val currentByte = buffer[i].toInt() and 0xFF
-                    if (lastByte == 255 && currentByte == 254) {
-                        isSync = true
-                        packetIdx = 0
-                    } else if (isSync) {
-                        packet[packetIdx++] = currentByte
-                        if (packetIdx >= 10) {
-                            val ch1 = (packet[1] shl 7) or (packet[2] and 0x7F)
-                            val ch2 = (packet[3] shl 7) or (packet[4] and 0x7F)
-                            runOnUiThread {
-                                ch1TextView?.text = "CH1: $ch1"
-                                ch2TextView?.text = "CH2: $ch2"
-                            }
-                            isSync = false
-                        }
-                    }
-                    lastByte = currentByte
+                val readings = decoder.consume(buffer, bytesRead)
+                readings.lastOrNull()?.let { reading ->
+                    runOnUiThread { updateChannelReadings(reading) }
                 }
-            } catch (e: IOException) {
+            } catch (_: IOException) {
                 isReading = false
                 closeConnection()
-                runOnUiThread { statusText?.text = "Status: Disconnected" }
+                runOnUiThread { updateStatus(getString(R.string.status_disconnected)) }
             }
         }
     }
 
+    private fun updateChannelReadings(reading: PacketParser.ChannelReading) {
+        ch1TextView.text = getString(R.string.channel_1_value, reading.ch1)
+        ch2TextView.text = getString(R.string.channel_2_value, reading.ch2)
+    }
+
+    private fun updateSelectedDevice(device: BluetoothDevice?) {
+        val label = if (device == null) {
+            getString(R.string.device_none)
+        } else {
+            getString(
+                R.string.device_label,
+                device.name ?: getString(R.string.unknown_device),
+                device.address
+            )
+        }
+        deviceText.text = label
+    }
+
+    private fun updateStatus(message: String) {
+        statusText.text = message
+    }
+
+    private fun openAppSettings() {
+        val intent = Intent(
+            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.fromParts("package", packageName, null)
+        )
+        startActivity(intent)
+    }
+
     private fun closeConnection() {
+        isReading = false
         try {
             inputStream?.close()
         } catch (_: IOException) {
@@ -200,7 +270,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        isReading = false
         closeConnection()
     }
 }

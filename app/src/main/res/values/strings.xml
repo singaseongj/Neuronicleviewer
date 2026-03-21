@@ -1,3 +1,24 @@
 <resources>
     <string name="app_name">Neuronicleviewer</string>
+    <string name="status_idle">Status: Ready to connect</string>
+    <string name="status_permissions_granted">Status: Permissions granted</string>
+    <string name="status_permissions_denied">Status: Bluetooth permissions denied</string>
+    <string name="status_bluetooth_unavailable">Status: Bluetooth unavailable on this device</string>
+    <string name="status_enable_bluetooth">Status: Turn on Bluetooth to continue</string>
+    <string name="status_permission_missing">Status: Bluetooth permission missing</string>
+    <string name="status_no_paired_device">Status: No paired Bluetooth device found</string>
+    <string name="status_connecting">Status: Connecting…</string>
+    <string name="status_connected">Status: Connected</string>
+    <string name="status_failed_connect">Status: Failed to connect</string>
+    <string name="status_disconnected">Status: Disconnected</string>
+    <string name="action_connect">Connect</string>
+    <string name="action_open_settings">App settings</string>
+    <string name="device_none">Device: none selected</string>
+    <string name="unknown_device">Unknown device</string>
+    <string name="choose_device">Choose a paired device</string>
+    <string name="device_label">Device: %1$s (%2$s)</string>
+    <string name="channel_1_default">CH1: 0</string>
+    <string name="channel_2_default">CH2: 0</string>
+    <string name="channel_1_value">CH1: %1$d</string>
+    <string name="channel_2_value">CH2: %1$d</string>
 </resources>
