@@ -48,6 +48,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var eegGraphView: EegGraphView
     private lateinit var connectButton: Button
     private lateinit var settingsButton: Button
+    private val signalFilterPipeline = SignalFilterPipeline()
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -242,9 +243,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateFrame(frame: PacketParser.DeviceFrame) {
-        ch1TextView.text = getString(R.string.channel_1_value, frame.reading.ch1)
-        ch2TextView.text = getString(R.string.channel_2_value, frame.reading.ch2)
-        eegGraphView.addReading(frame.reading)
+        val filteredReading = signalFilterPipeline.process(frame.reading)
+        ch1TextView.text = getString(R.string.channel_1_value, filteredReading.ch1)
+        ch2TextView.text = getString(R.string.channel_2_value, filteredReading.ch2)
+        eegGraphView.addReading(filteredReading)
         renderStatus(frame.status)
     }
 
@@ -319,6 +321,7 @@ class MainActivity : AppCompatActivity() {
         } catch (_: IOException) {
         }
         bluetoothSocket = null
+        signalFilterPipeline.reset()
     }
 
     override fun onDestroy() {
