@@ -43,7 +43,7 @@ class EegGraphView @JvmOverloads constructor(
         style = Paint.Style.STROKE
     }
 
-    fun addReading(reading: PacketParser.ChannelReading) {
+    fun addReading(reading: FilteredChannelReading) {
         append(ch1Samples, reading.ch1)
         append(ch2Samples, reading.ch2)
         postInvalidateOnAnimation()
