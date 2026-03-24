@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Neuronicleviewer</string>
+    <string name="app_name">NeuroNicle</string>
     <string name="status_idle">Status: Ready to connect</string>
     <string name="status_permissions_granted">Status: Permissions granted</string>
     <string name="status_permissions_denied">Status: Bluetooth permissions denied</string>
